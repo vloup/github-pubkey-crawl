@@ -42,6 +42,7 @@ int main(string[] args)
 	int retcode = userworker(pubkey, getAuthentication(askPassword), id);
 
 	/* ensure correct termination of children threads */
+	writeln("Waiting for other threads to finish.");
 	send(pubkey, "FIN");
 	string answerpubkey = receiveOnly!string();
 	send(print, "FIN");
@@ -151,7 +152,7 @@ int userworker(Tid pubkey, HTTP conn, long startid)
 		}
 	}
 
-	stderr.writeln("Stopping main user worker.");
+	writeln("Stopping main user worker.");
 
 	return retcode;
 }
@@ -172,7 +173,7 @@ void pubkeyworker(Tid parentTid, Tid printworker)
 			}
 		);
 	}
-	stderr.writeln("Stopping pubkey worker.");
+	writeln("Stopping pubkey worker.");
 }
 
 void getpubkeys(Tid printworker, HTTP conn, long id, ref string login)
@@ -180,14 +181,15 @@ void getpubkeys(Tid printworker, HTTP conn, long id, ref string login)
 	enum GITHUB_ADDRESS = "https://github.com/";
 
 	try {
-		foreach (line; parallel(byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn))) {
-			/*
-			 * Weird users such as 'session' or 'readme' return bad data.
-			 * Luckily, the first line of that kind of input is empty, 
-			 * so we do detect them like that and ignore them
-			 */
+		/*
+		 * Weird users such as 'session' or 'readme' return bad data.
+		 * Luckily, the first line of that kind of input is empty,
+		 * so we do detect them like that and ignore them.
+		 * For this same reason, one should not use parallel since it may hang the whole.
+		 */
+		foreach (line; byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn)) {
 			if (line.length == 0) {
-				stderr.writeln("User ", login, ": Redirected page.");
+				writeln("User ", login, ": Redirected page.");
 				return;
 			}
 			send(printworker, id, login, to!string(line));
@@ -208,11 +210,11 @@ void printworker(Tid parentTid, string filename)
 				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
 			},
 			(string fin) {
-				output.flush();
 				loop = false;
 				send(parentTid, "FIN-ACK");
 			}
 		);
+		output.flush();
 	}
-	stderr.writeln("Stopping print worker.");
+	writeln("Stopping print worker.");
 }
