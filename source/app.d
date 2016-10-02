@@ -41,7 +41,11 @@ int main(string[] args)
 
 	int retcode = userworker(pubkey, getAuthentication(askPassword), id);
 
-	// TODO(vloup): wait for confirmation of children thread stop?
+	/* ensure correct termination of children threads */
+	send(pubkey, "FIN");
+	string answerpubkey = receiveOnly!string();
+	send(print, "FIN");
+	string asnwerprint = receiveOnly!string();
 
 	return retcode;
 }
@@ -147,41 +151,49 @@ int userworker(Tid pubkey, HTTP conn, long startid)
 		}
 	}
 
+	stderr.writeln("Stopping main user worker.");
+
 	return retcode;
 }
 
 void pubkeyworker(Tid parentTid, Tid printworker)
 {
-	enum GITHUB_ADDRESS = "https://github.com/";
-
 	bool loop = true;
 	HTTP conn = HTTP();
 
 	while (loop) {
-		try {
-			receive(
-				(long id, ref string login) {
-					try {
-						foreach (line; parallel(byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn))) {
-							/*
-							 * Weird users such as 'session' or 'readme' return bad data.
-							 * Luckily, the first line of that kind of input is empty, 
-							 * so we do detect them like that and ignore them
-							 */
-							if (line.length == 0) {
-								break;
-							}
-							send(printworker, id, login, to!string(line));
-						}
-					} catch (CurlException ce) {
-						writeln("User ", login, ": Got a ", conn.statusLine().code, " HTTP return code.");
-					}
-				}
-			);
-		} catch (OwnerTerminated ot) {
-			stderr.writeln("Stopping pubkey worker.");
-			loop = false;
+		receive(
+			(long id, ref string login) {
+				getpubkeys(printworker, conn, id, login);
+			},
+			(string fin) {
+				loop = false;
+				send(parentTid, "FIN-ACK");
+			}
+		);
+	}
+	stderr.writeln("Stopping pubkey worker.");
+}
+
+void getpubkeys(Tid printworker, HTTP conn, long id, ref string login)
+{
+	enum GITHUB_ADDRESS = "https://github.com/";
+
+	try {
+		foreach (line; parallel(byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn))) {
+			/*
+			 * Weird users such as 'session' or 'readme' return bad data.
+			 * Luckily, the first line of that kind of input is empty, 
+			 * so we do detect them like that and ignore them
+			 */
+			if (line.length == 0) {
+				stderr.writeln("User ", login, ": Redirected page.");
+				return;
+			}
+			send(printworker, id, login, to!string(line));
 		}
+	} catch (CurlException ce) {
+		writeln("User ", login, ": Got a ", conn.statusLine().code, " HTTP return code.");
 	}
 }
 
@@ -189,17 +201,18 @@ void printworker(Tid parentTid, string filename)
 {
 	File output = File(filename, "a");
 	bool loop = true;
+
 	while (loop) {
-		try {
-			receive(
-				(long id, ref string login, ref string key) {
-					output.writefln("%d,\"%s\",\"%s\"", id, login, key);
-				}
-			);
-			output.flush();
-		} catch (OwnerTerminated ot) {
-			stderr.writeln("Stopping print worker.");
-			loop = false;
-		}
+		receive(
+			(long id, ref string login, ref string key) {
+				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
+			},
+			(string fin) {
+				output.flush();
+				loop = false;
+				send(parentTid, "FIN-ACK");
+			}
+		);
 	}
+	stderr.writeln("Stopping print worker.");
 }
