@@ -1,0 +1,9 @@
+.dub
+docs.json
+__dummy.html
+*.o
+*.obj
+
+# file created by the app
+login-info
+github-pubkey-crawl

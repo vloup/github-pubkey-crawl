@@ -1,0 +1,9 @@
+{
+	"name": "github-pubkey-crawl",
+	"authors": [
+		"Vincent Loup"
+	],
+	"description": "A small Github public key crawler.",
+	"copyright": "Copyright © 2016, Vincent Loup",
+	"license": "GPLv3"
+}
