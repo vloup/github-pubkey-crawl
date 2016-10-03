@@ -13,22 +13,25 @@ int main(string[] args)
 	import std.getopt;
 
 	string filename = "github-pubkey.csv";
+	size_t pubkeyWorkerNum = 10;
 	long id = 0;
 	bool askPassword = false;
 
 	auto help = getopt(args, "output|o", &filename,
 			"id|i", &id,
-			"ask-password", &askPassword);
+			"ask-password", &askPassword,
+			"worker|w", &pubkeyWorkerNum);
 
 	if (help.helpWanted) {
 		writeln("Usage: github-pubkey-crawl [options...]");
 		writeln("Options:");
-		writeln(" -o, --output FILE     Specify an output file.");
-		writeln(" -i, --index ID        Specify a starting id to crawl.");
-		writeln("                       A negative value (including 0) will continue the previous crawl if it can.");
-		writeln("                       If no other crawl were done previously, it will start from the beginning,");
-		writeln("     --ask-password    Do not cache the password on disk in the «login-info» file and ask for it instead.");
-		writeln(" -h, --help            Display this help.");
+		writeln(" -o, --output FILE      Specify an output file.");
+		writeln(" -i, --index ID         Specify a starting id to crawl.");
+		writeln("                        A negative value (including 0) will continue the previous crawl if it can.");
+		writeln("                        If no other crawl were done previously, it will start from the beginning,");
+		writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and ask for it instead.");
+		writeln(" -w, --worker AMOUNT    Specify the amount of subworkers for the key gathering task.");
+		writeln(" -h, --help             Display this help.");
 		return 0;
 	}
 
@@ -37,14 +40,19 @@ int main(string[] args)
 	}
 
 	Tid print = spawn(&printworker, thisTid, filename);
-	Tid pubkey = spawn(&pubkeyworker, thisTid, print);
+	Tid[] pubkey;
+	for (size_t i = 0; i < pubkeyWorkerNum; i++) {
+		pubkey ~= spawn(&pubkeyworker, thisTid, print);
+	}
 
 	int retcode = userworker(pubkey, getAuthentication(askPassword), id);
 
 	/* ensure correct termination of children threads */
 	writeln("Waiting for other threads to finish.");
-	send(pubkey, "FIN");
-	string answerpubkey = receiveOnly!string();
+	for (size_t i = 0; i < pubkey.length; i++) {
+		send(pubkey[i], "FIN");
+		string answerpubkey = receiveOnly!string();
+	}
 	send(print, "FIN");
 	string asnwerprint = receiveOnly!string();
 
@@ -112,12 +120,13 @@ HTTP getAuthentication(bool askPassword)
 	return conn;
 }
 
-int userworker(Tid pubkey, HTTP conn, long startid)
+int userworker(Tid[] pubkey, HTTP conn, long startid)
 {
 	enum API_ADDRESS = "https://api.github.com/users?since=";
 	bool loop = true;
 	long id = startid;
 	int retcode = 0;
+	size_t workerid = 0;
 
 	while (loop) {
 		try {
@@ -127,7 +136,9 @@ int userworker(Tid pubkey, HTTP conn, long startid)
 
 			if (array.length != 0) {
 				foreach (ref a; parallel(array)) {
-					send(pubkey, a["id"].integer, a["login"].str);
+					send(pubkey[workerid], a["id"].integer, a["login"].str);
+					/* round robin of worker */
+					workerid = (workerid + 1) % pubkey.length;
 				}
 				id = array[$ - 1]["id"].integer;
 			} else {
