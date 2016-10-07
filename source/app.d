@@ -36,16 +36,22 @@ int main(string[] args)
 	}
 
 	if (id <= 0) {
+		writeln("Finding last user id crawled.");
 		id = getLastId(filename);
 	}
+	writeln("Starting with user id ", id, ".");
 
+	HTTP conn = getAuthentication(askPassword);
+
+	writeln("Spawning pubkey workers.");
 	Tid print = spawn(&printworker, thisTid, filename);
 	Tid[] pubkey;
 	for (size_t i = 0; i < pubkeyWorkerNum; i++) {
 		pubkey ~= spawn(&pubkeyworker, thisTid, print);
 	}
 
-	int retcode = userworker(pubkey, getAuthentication(askPassword), id);
+	writeln("Starting main user worker.");
+	int retcode = userworker(pubkey, conn, id);
 
 	/* ensure correct termination of children threads */
 	writeln("Waiting for other threads to finish.");
@@ -98,6 +104,7 @@ HTTP getAuthentication(bool askPassword)
 		username = j["username"].str;
 		passwd = j["passwd"].str;
 	} else {
+		writeln("Please sign in into your GitHub account.");
 		write("login: ");
 		username = chomp(readln());
 
