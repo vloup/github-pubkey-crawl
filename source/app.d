@@ -35,7 +35,12 @@ int main(string[] args)
 
 	if (id == 0) {
 		writeln("Finding last user id crawled.");
-		id = getLastId(filename);
+		try {
+			id = getLastId(filename);
+		} catch (Exception e) {
+			stderr.writeln(e.msg);
+			return 2;
+		}
 	}
 	writeln("Starting with user id ", id, ".");
 
