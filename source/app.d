@@ -14,28 +14,26 @@ int main(string[] args)
 
 	string filename = "github-pubkey.csv";
 	size_t pubkeyWorkerNum = 10;
-	long id = 0;
+	ulong id = 0;
 	bool askPassword = false;
 
-	auto help = getopt(args, "output|o", &filename,
-			"id|i", &id,
-			"ask-password", &askPassword,
-			"worker|w", &pubkeyWorkerNum);
+	try {
+		auto help = getopt(args, "output|o", &filename,
+				"id|i", &id,
+				"ask-password", &askPassword,
+				"worker|w", &pubkeyWorkerNum);
 
-	if (help.helpWanted) {
-		writeln("Usage: github-pubkey-crawl [options...]");
-		writeln("Options:");
-		writeln(" -o, --output FILE      Specify an output file.");
-		writeln(" -i, --index ID         Specify a starting id to crawl.");
-		writeln("                        A negative value (including 0) will continue the previous crawl if it can.");
-		writeln("                        If no other crawl were done previously, it will start from the beginning,");
-		writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and ask for it instead.");
-		writeln(" -w, --worker AMOUNT    Specify the amount of subworkers for the key gathering task.");
-		writeln(" -h, --help             Display this help.");
-		return 0;
+		if (help.helpWanted) {
+			printHelp();
+			return 0;
+		}
+	} catch (ConvException ce) {
+		writeln("[ERROR] Could not parse arguments.");
+		printHelp();
+		return 1;
 	}
 
-	if (id <= 0) {
+	if (id == 0) {
 		writeln("Finding last user id crawled.");
 		id = getLastId(filename);
 	}
@@ -65,10 +63,31 @@ int main(string[] args)
 	return retcode;
 }
 
-long getLastId(string filename)
+void printHelp()
+{
+	writeln("Usage: github-pubkey-crawl [options...]");
+	writeln("Options:");
+	writeln(" -o, --output FILE      Specify an output file.");
+	writeln(" -i, --index ID         Specify a starting id to crawl.");
+	writeln("                        A negative value (including 0) will continue the previous crawl if it can.");
+	writeln("                        If no other crawl were done previously, it will start from the beginning,");
+	writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and ask for it instead.");
+	writeln(" -w, --worker AMOUNT    Specify the amount of subworkers for the key gathering task.");
+	writeln(" -h, --help             Display this help.");
+}
+
+ulong getLastId(string filename)
 {
 	import std.csv;
 	import std.typecons;
+	import core.stdc.config;
+	import core.stdc.stdio;
+	import core.stdc.stdlib;
+
+	enum ERR_OPEN = "[ERROR] Failed to open file.";
+	enum ERR_SEEK = "[ERROR] Failed to seek in file.";
+	enum ERR_CALLOC = "[ERROR] Failed to calloc memory.";
+	enum ERR_FGETS = "[ERROR] Failed to fgets in file.";
 
 	if (!exists(filename)) {
 		return 0;
@@ -79,11 +98,86 @@ long getLastId(string filename)
 		return 0;
 	}
 
-	File file = File(filename, "r");
+	int ret = 0;
 
-	long id = 0;
-	foreach(record;	file.byLine().joiner("\n")
-			.csvReader!(Tuple!(long, string, string))(',')) {
+	FILE* fd = fopen(filename.toStringz, "r");
+	if (!fd) {
+		throw new Exception(ERR_OPEN);
+	}
+
+	/* EOF */
+	ret = fseek(fd, 0, SEEK_END);
+	if (ret != 0) {
+		fclose(fd);
+		throw new Exception(ERR_SEEK);
+	}
+
+	c_long end = ftell(fd);
+
+	/* last \n */
+	ret = fseek(fd, -1, SEEK_CUR);
+	if (ret != 0 || ftell(fd) == 0) {
+		fclose(fd);
+		throw new Exception(ERR_SEEK);
+	}
+
+	/*
+	 * Backtrack up to the previous \n.
+	 * Also, make sure we are being able to seek one back.
+	 */
+	int c = -1;
+	while(c != '\n' && ftell(fd) > 0) {
+		ret = fseek(fd, -1, SEEK_CUR);
+		if (ret != 0) {
+			fclose(fd);
+			throw new Exception(ERR_SEEK);
+		}
+
+		c = fgetc(fd);
+
+		ret = fseek(fd, -1, SEEK_CUR);
+		if (ret != 0) {
+			fclose(fd);
+			throw new Exception(ERR_SEEK);
+		}
+	}
+
+	/* are we in the middle of the file or we found the start? */
+	if (ftell(fd) > 0) {
+		ret = fseek(fd, 1, SEEK_CUR);
+		if (ret != 0) {
+			fclose(fd);
+			throw new Exception(ERR_SEEK);
+		}
+	}
+
+	c_long begin = ftell(fd);
+
+	/* allocate line size */
+	char *buf = cast(char*)calloc(end - begin, char.sizeof);
+	if (!buf) {
+		fclose(fd);
+		throw new Exception(ERR_CALLOC);
+	}
+
+	/* read last line */
+	char *rets = fgets(buf, cast(int)(end - begin), fd);
+	if (!rets) {
+		fclose(fd);
+		free(buf);
+		throw new Exception(ERR_FGETS);
+	}
+
+	fclose(fd);
+
+	/* to string */
+	string line = buf.fromStringz.idup;
+	free(buf);
+
+	/* read the csv */
+	ulong id = 0;
+	foreach(record;	line
+			.csvReader!(Tuple!(ulong, string, string))(',')) {
 		id = record[0];
 	}
 
@@ -127,11 +221,11 @@ HTTP getAuthentication(bool askPassword)
 	return conn;
 }
 
-int userworker(Tid[] pubkey, HTTP conn, long startid)
+int userworker(Tid[] pubkey, HTTP conn, ulong startid)
 {
 	enum API_ADDRESS = "https://api.github.com/users?since=";
 	bool loop = true;
-	long id = startid;
+	ulong id = startid;
 	int retcode = 0;
 	size_t workerid = 0;
 
@@ -143,7 +237,7 @@ int userworker(Tid[] pubkey, HTTP conn, long startid)
 
 			if (array.length != 0) {
 				foreach (ref a; parallel(array)) {
-					send(pubkey[workerid], a["id"].integer, a["login"].str);
+					send(pubkey[workerid], to!ulong(a["id"].integer), a["login"].str);
 					/* round robin of worker */
 					workerid = (workerid + 1) % pubkey.length;
 				}
@@ -182,7 +276,7 @@ void pubkeyworker(Tid parentTid, Tid printworker)
 
 	while (loop) {
 		receive(
-			(long id, ref string login) {
+			(ulong id, ref string login) {
 				getpubkeys(printworker, conn, id, login);
 			},
 			(string fin) {
@@ -194,7 +288,7 @@ void pubkeyworker(Tid parentTid, Tid printworker)
 	writeln("Stopping pubkey worker.");
 }
 
-void getpubkeys(Tid printworker, HTTP conn, long id, ref string login)
+void getpubkeys(Tid printworker, HTTP conn, ulong id, ref string login)
 {
 	enum GITHUB_ADDRESS = "https://github.com/";
 
@@ -224,7 +318,7 @@ void printworker(Tid parentTid, string filename)
 
 	while (loop) {
 		receive(
-			(long id, ref string login, ref string key) {
+			(ulong id, ref string login, ref string key) {
 				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
 			},
 			(string fin) {
