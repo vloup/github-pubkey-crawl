@@ -55,6 +55,7 @@ int main(string[] args)
 
 	writeln("Starting main user worker.");
 	int retcode = userworker(pubkey, conn, id);
+	stdout.flush();
 
 	/* ensure correct termination of children threads */
 	writeln("Waiting for other threads to finish.");
@@ -62,6 +63,8 @@ int main(string[] args)
 		send(pubkey[i], "FIN");
 		string answerpubkey = receiveOnly!string();
 	}
+
+	stdout.flush();
 	send(print, "FIN");
 	string asnwerprint = receiveOnly!string();
 
