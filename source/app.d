@@ -293,7 +293,7 @@ void pubkeyworker(Tid parentTid, Tid printworker)
 			}
 		);
 	}
-	writeln("Stopping pubkey worker.");
+	writeln("Stopping pubkey worker ", thisTid(), ".");
 }
 
 void getpubkeys(Tid printworker, HTTP conn, ulong id, ref string login)
