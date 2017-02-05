@@ -134,7 +134,7 @@ ulong getLastId(string filename)
 	 * Also, make sure we are being able to seek one back.
 	 */
 	int c = -1;
-	while(c != '\n' && ftell(fd) > 0) {
+	while (c != '\n' && ftell(fd) > 0) {
 		ret = fseek(fd, -1, SEEK_CUR);
 		if (ret != 0) {
 			fclose(fd);
@@ -184,7 +184,7 @@ ulong getLastId(string filename)
 
 	/* read the csv */
 	ulong id = 0;
-	foreach(record;	line
+	foreach (record; line
 			.csvReader!(Tuple!(ulong, string, string))(',')) {
 		id = record[0];
 	}
