@@ -10,7 +10,7 @@ import std.string;
 
 int main(string[] args)
 {
-	import std.getopt;
+	import std.getopt : getopt;
 
 	string filename = "github-pubkey.csv";
 	size_t pubkeyWorkerNum = 10;
@@ -18,7 +18,7 @@ int main(string[] args)
 	bool askPassword = false;
 
 	try {
-		auto help = getopt(args, "output|o", &filename,
+		const auto help = getopt(args, "output|o", &filename,
 				"id|i", &id,
 				"ask-password", &askPassword,
 				"worker|w", &pubkeyWorkerNum);
@@ -54,19 +54,19 @@ int main(string[] args)
 	}
 
 	writeln("Starting main user worker.");
-	int retcode = userworker(pubkey, conn, id);
+	const int retcode = userworker(pubkey, conn, id);
 	stdout.flush();
 
 	/* ensure correct termination of children threads */
 	writeln("Waiting for other threads to finish.");
 	for (size_t i = 0; i < pubkey.length; i++) {
 		send(pubkey[i], "FIN");
-		string answerpubkey = receiveOnly!string();
+		receiveOnly!string();
 	}
 
 	stdout.flush();
 	send(print, "FIN");
-	string asnwerprint = receiveOnly!string();
+	receiveOnly!string();
 
 	return retcode;
 }
@@ -79,18 +79,19 @@ void printHelp()
 	writeln(" -i, --index ID         Specify a starting id to crawl.");
 	writeln("                        A negative value (including 0) will continue the previous crawl if it can.");
 	writeln("                        If no other crawl were done previously, it will start from the beginning,");
-	writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and ask for it instead.");
+	writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and ask for it",
+			" instead.");
 	writeln(" -w, --worker AMOUNT    Specify the amount of subworkers for the key gathering task.");
 	writeln(" -h, --help             Display this help.");
 }
 
 ulong getLastId(string filename)
 {
-	import std.csv;
-	import std.typecons;
-	import core.stdc.config;
-	import core.stdc.stdio;
-	import core.stdc.stdlib;
+	import core.stdc.config : c_long;
+	import core.stdc.stdio : fclose, fgets, fopen, fseek, ftell;
+	import core.stdc.stdlib : calloc, free;
+	import std.csv : csvReader;
+	import std.typecons : Tuple;
 
 	enum ERR_OPEN = "[ERROR] Failed to open file.";
 	enum ERR_SEEK = "[ERROR] Failed to seek in file.";
@@ -255,7 +256,7 @@ int userworker(Tid[] pubkey, HTTP conn, ulong startid)
 				writeln("[DONE] Finished crawling.");
 			}
 		} catch (CurlException ce) {
-			int statuscode = conn.statusLine().code;
+			const int statuscode = conn.statusLine().code;
 			if (statuscode == 401) {
 				stderr.writeln("[ERROR] Bad credentials.");
 				loop = false;
@@ -288,8 +289,10 @@ void pubkeyworker(Tid parentTid, Tid printworker)
 				getpubkeys(printworker, conn, id, login);
 			},
 			(string fin) {
-				loop = false;
-				send(parentTid, "FIN-ACK");
+				if (fin == "FIN") {
+					loop = false;
+					send(parentTid, "FIN-ACK");
+				}
 			}
 		);
 	}
@@ -330,8 +333,10 @@ void printworker(Tid parentTid, string filename)
 				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
 			},
 			(string fin) {
-				loop = false;
-				send(parentTid, "FIN-ACK");
+				if (fin == "FIN") {
+					loop = false;
+					send(parentTid, "FIN-ACK");
+				}
 			}
 		);
 		output.flush();
