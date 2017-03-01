@@ -8,6 +8,13 @@ import std.parallelism : parallel;
 import std.stdio;
 import std.string;
 
+/**
+ * Main entry point.
+ * Params:
+ *   args = command line arguments
+ * Returns:
+ *   the global return status code
+ */
 int main(string[] args)
 {
 	import std.getopt : getopt;
@@ -71,6 +78,9 @@ int main(string[] args)
 	return retcode;
 }
 
+/**
+ * Print the crawler's command line options.
+ */
 void printHelp()
 {
 	writeln("Usage: github-pubkey-crawl [options...]");
@@ -79,12 +89,19 @@ void printHelp()
 	writeln(" -i, --index ID         Specify a starting id to crawl.");
 	writeln("                        A negative value (including 0) will continue the previous crawl if it can.");
 	writeln("                        If no other crawl were done previously, it will start from the beginning,");
-	writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and ask for it",
-			" instead.");
+	writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and prompt for it");
+	writeln("                        instead.");
 	writeln(" -w, --worker AMOUNT    Specify the amount of subworkers for the key gathering task.");
 	writeln(" -h, --help             Display this help.");
 }
 
+/**
+ * Get the last user id from the output file.
+ * Params:
+ *   filename = file we will look the last id into.
+ * Returns:
+ *   the last user id of the file
+ */
 ulong getLastId(string filename)
 {
 	import core.stdc.config : c_long;
@@ -193,6 +210,13 @@ ulong getLastId(string filename)
 	return id;
 }
 
+/**
+ * Log into GitHub.
+ * Params:
+ *   askPassword = if we should ask the password or try to use the cached one.
+ * Returns:
+ *   an openend HTTP socket where we logged in.
+ */
 HTTP getAuthentication(bool askPassword)
 {
 	import std.process : executeShell;
@@ -230,6 +254,19 @@ HTTP getAuthentication(bool askPassword)
 	return conn;
 }
 
+/**
+ * Worker that will crawl the user logins and transmit this to the public key workers.
+ * Params:
+ *   pubkey = array of public key workers
+ *   conn = the HTTP socket which we will use to gather user names.
+ *   startid = the first id we will crawl
+ * Returns:
+ *  the status code of this thread.
+ *   0 means success
+ *  -1 means that we have some bad login infos.
+ *  -2 means that we exhausted the call API.
+ *  -3 means that we got another type of error.
+ */
 int userworker(Tid[] pubkey, HTTP conn, ulong startid)
 {
 	enum API_ADDRESS = "https://api.github.com/users?since=";
@@ -278,6 +315,12 @@ int userworker(Tid[] pubkey, HTTP conn, ulong startid)
 	return retcode;
 }
 
+/**
+ * Worker that will gather public keys given a login name.
+ * Params:
+ *   parentTid = parent thread id
+ *   printworker = print worker thread id
+ */
 void pubkeyworker(Tid parentTid, Tid printworker)
 {
 	bool loop = true;
@@ -299,6 +342,14 @@ void pubkeyworker(Tid parentTid, Tid printworker)
 	writeln("Stopping pubkey worker ", thisTid(), ".");
 }
 
+/**
+ * Gather the public keys of one user.
+ * Params:
+ *   printworker = print worker thread id
+ *   conn = HTTP socket to gather the public keys from.
+ *   id = the user id we are crawling
+ *   login = the user name we are crawling
+ */
 void getpubkeys(Tid printworker, HTTP conn, ulong id, ref string login)
 {
 	enum GITHUB_ADDRESS = "https://github.com/";
@@ -322,6 +373,12 @@ void getpubkeys(Tid printworker, HTTP conn, ulong id, ref string login)
 	}
 }
 
+/**
+ * Worker that writes the crawl result into a file.
+ * Params:
+ *   parentTid = parent thread id
+ *   filename = output file
+ */
 void printworker(Tid parentTid, string filename)
 {
 	File output = File(filename, "a");
