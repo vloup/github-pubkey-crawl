@@ -55,9 +55,9 @@ int main(string[] args)
 
 	writeln("Spawning pubkey workers.");
 	Tid print = spawn(&printworker, thisTid, filename);
-	Tid[] pubkey;
+	Tid[] pubkey = new Tid[pubkeyWorkerNum];
 	for (size_t i = 0; i < pubkeyWorkerNum; i++) {
-		pubkey ~= spawn(&pubkeyworker, thisTid, print);
+		pubkey[i] = spawn(&pubkeyworker, thisTid, print);
 	}
 
 	writeln("Starting main user worker.");
