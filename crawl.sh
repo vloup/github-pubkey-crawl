@@ -1,6 +1,6 @@
 #!/bin/sh
 
-dub build -b release
+dub build
 
 retcode=-1
 while [ "$retcode" -ne 0 ]; do
