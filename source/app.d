@@ -36,7 +36,7 @@ int main(string[] args)
 			return 0;
 		}
 	} catch (ConvException ce) {
-		writeln("[ERROR] Could not parse arguments.");
+		stderr.writeln("[ERROR] Could not parse arguments.");
 		printHelp();
 		return 1;
 	}
