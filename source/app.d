@@ -1,7 +1,7 @@
 import std.algorithm : joiner;
 import std.concurrency;
 import std.conv;
-import std.file;
+import std.file: exists, getSize, remove;
 import std.json;
 import std.net.curl;
 import std.parallelism : parallel;
@@ -20,6 +20,7 @@ int main(string[] args)
 	import std.getopt : getopt;
 
 	string filename = "github-pubkey.csv";
+	enum credcache = "login-info";
 	size_t pubkeyWorkerNum = 10;
 	ulong id = 0;
 	bool askPassword = false;
@@ -51,7 +52,7 @@ int main(string[] args)
 	}
 	writeln("Starting with user id ", id, ".");
 
-	HTTP conn = getAuthentication(askPassword);
+	HTTP conn = getAuthentication(askPassword, credcache);
 
 	writeln("Spawning pubkey workers.");
 	Tid print = spawn(&printworker, thisTid, filename);
@@ -74,6 +75,10 @@ int main(string[] args)
 	stdout.flush();
 	send(print, "FIN");
 	receiveOnly!string();
+
+	if (retcode == 0 && exists(credcache)) {
+		remove(credcache);
+	}
 
 	return retcode;
 }
@@ -214,19 +219,19 @@ ulong getLastId(string filename)
  * Log into GitHub.
  * Params:
  *   askPassword = if we should ask the password or try to use the cached one.
+ *   credcache = file that caches the credentials for reuse
  * Returns:
  *   an openend HTTP socket where we logged in.
  */
-HTTP getAuthentication(bool askPassword)
+HTTP getAuthentication(bool askPassword, string credcache)
 {
 	import std.process : executeShell;
 
-	enum filename = "login-info";
 
 	string username, passwd;
 
-	if (exists(filename) && !askPassword) {
-		File login = File(filename, "r");
+	if (exists(credcache) && !askPassword) {
+		File login = File(credcache, "r");
 		JSONValue j = parseJSON(login.byLine().joiner("\n"));
 		username = j["username"].str;
 		passwd = j["passwd"].str;
@@ -242,7 +247,7 @@ HTTP getAuthentication(bool askPassword)
 		write("\n");
 
 		if (!askPassword) {
-			File login = File(filename, "w");
+			File login = File(credcache, "w");
 			JSONValue j = ["username": username, "passwd": passwd];
 			login.writeln(j.toString());
 		}
