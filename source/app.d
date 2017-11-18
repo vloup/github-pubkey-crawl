@@ -76,7 +76,7 @@ int main(string[] args)
 	send(print, "FIN");
 	receiveOnly!string();
 
-	if (retcode == 0 && exists(credcache)) {
+	if ((retcode == 0 || retcode == -1) && exists(credcache)) {
 		remove(credcache);
 	}
 
