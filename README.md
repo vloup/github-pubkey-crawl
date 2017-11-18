@@ -22,6 +22,12 @@ Options
 * `-w`, `--worker`: give a different amount of public keys download workers
   (default is 10)
 
+Two-factor authentication
+-------------------------
+
+If you are using 2FA, you will need to create a personal access token [here](https://github.com/settings/tokens) and use the generated password instead of your regular password.
+Make sure to have enough access to read users and their public keys.
+
 Licence
 -------
 
