@@ -24,11 +24,13 @@ int main(string[] args)
 	size_t pubkeyWorkerNum = 10;
 	ulong id = 0;
 	bool askPassword = false;
+	bool crawlGPGKeys = false;
 
 	try {
 		const auto help = getopt(args, "output|o", &filename,
 				"id|i", &id,
 				"ask-password", &askPassword,
+				"gpg", &crawlGPGKeys,
 				"worker|w", &pubkeyWorkerNum);
 
 		if (help.helpWanted) {
@@ -58,7 +60,7 @@ int main(string[] args)
 	Tid print = spawn(&printworker, thisTid, filename);
 	Tid[] pubkey = new Tid[pubkeyWorkerNum];
 	for (size_t i = 0; i < pubkeyWorkerNum; i++) {
-		pubkey[i] = spawn(&pubkeyworker, thisTid, print);
+		pubkey[i] = spawn(&pubkeyworker, thisTid, print, crawlGPGKeys);
 	}
 
 	writeln("Starting main user worker.");
@@ -96,6 +98,7 @@ void printHelp()
 	writeln("                        If no other crawl were done previously, it will start from the beginning,");
 	writeln("     --ask-password     Do not cache the password on disk in the «login-info» file and prompt for it");
 	writeln("                        instead.");
+	writeln("     --gpg              (Experimental) Fetch PGP keys instead of SSH keys.");
 	writeln(" -w, --worker AMOUNT    Specify the amount of subworkers for the key gathering task.");
 	writeln(" -h, --help             Display this help.");
 }
@@ -326,7 +329,7 @@ int userworker(Tid[] pubkey, HTTP conn, ulong startid)
  *   parentTid = parent thread id
  *   printworker = print worker thread id
  */
-void pubkeyworker(Tid parentTid, Tid printworker)
+void pubkeyworker(Tid parentTid, Tid printworker, bool crawlGPGKeys)
 {
 	bool loop = true;
 	HTTP conn = HTTP();
@@ -334,7 +337,7 @@ void pubkeyworker(Tid parentTid, Tid printworker)
 	while (loop) {
 		receive(
 			(ulong id, ref string login) {
-				getpubkeys(printworker, conn, id, login);
+				getpubkeys(printworker, conn, id, login, crawlGPGKeys);
 			},
 			(string fin) {
 				if (fin == "FIN") {
@@ -355,23 +358,34 @@ void pubkeyworker(Tid parentTid, Tid printworker)
  *   id = the user id we are crawling
  *   login = the user name we are crawling
  */
-void getpubkeys(Tid printworker, HTTP conn, ulong id, ref string login)
+void getpubkeys(Tid printworker, HTTP conn, ulong id, ref string login, bool crawlGPGKeys)
 {
 	enum GITHUB_ADDRESS = "https://github.com/";
+	enum GITHUB_GPG_ADDRESS = "https://api.github.com/users/";
 
 	try {
-		/*
-		 * Weird users such as 'session' or 'readme' return bad data.
-		 * Luckily, the first line of that kind of input is empty,
-		 * so we do detect them like that and ignore them.
-		 * For this same reason, one should not use parallel since it may hang the whole.
-		 */
-		foreach (line; byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn)) {
-			if (line.length == 0) {
-				writeln("User ", login, ": Redirected page.");
-				return;
+		if (crawlGPGKeys) {
+			auto raw = get(GITHUB_GPG_ADDRESS ~ login ~ "/gpg_keys", conn);
+			JSONValue[] array = parseJSON(raw).array();
+			if (array.length != 0) {
+				foreach (ref a; parallel(array)) {
+					send(printworker, id, login, a["public_key"].str, a["raw_key"].str);
+				}
 			}
-			send(printworker, id, login, to!string(line));
+		} else {
+			foreach (line; byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn)) {
+				/*
+				 * Weird users such as 'session' or 'readme' return bad data.
+				 * Luckily, the first line of that kind of input is empty,
+				 * so we do detect them like that and ignore them.
+				 * For this same reason, one should not use parallel since it may hang the whole.
+				 */
+				if (line.length == 0) {
+					writeln("User ", login, ": Redirected page.");
+					return;
+				}
+				send(printworker, id, login, to!string(line));
+			}
 		}
 	} catch (CurlException ce) {
 		writeln("User ", login, ": Got a ", conn.statusLine().code, " HTTP return code.");
@@ -393,6 +407,10 @@ void printworker(Tid parentTid, string filename)
 		receive(
 			(ulong id, ref string login, ref string key) {
 				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
+			},
+			(ulong id, ref string login, ref string public_key, ref string raw_key) {
+				// what is jsonvalue public_key or jsonvalue raw_key are null, or how shall we handle \n in raw_key?
+				output.writefln("%d,\"%s\",\"%s\",\"%s\"", id, login, public_key, raw_key);
 			},
 			(string fin) {
 				if (fin == "FIN") {

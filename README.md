@@ -19,6 +19,7 @@ Options
 * `-o`, `--output`: specify the output file (default is `github-pubkey.csv`).
 * `-i`, `--id`: give the starting id.
 * `--ask-password`: avoid caching the password into the `login-info` file.
+* `--gpg`: crawl PGP keys instead of SSH keys.
 * `-w`, `--worker`: give a different amount of public keys download workers
   (default is 10)
 
