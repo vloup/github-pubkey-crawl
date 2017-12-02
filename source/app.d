@@ -409,8 +409,8 @@ void printworker(Tid parentTid, string filename)
 				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
 			},
 			(ulong id, ref string login, ref string public_key, ref string raw_key) {
-				// what is jsonvalue public_key or jsonvalue raw_key are null, or how shall we handle \n in raw_key?
-				output.writefln("%d,\"%s\",\"%s\",\"%s\"", id, login, public_key, raw_key);
+				import std.base64;
+				output.writefln("%d,\"%s\",\"%s\",\"%s\"", id, login, public_key, Base64.encode(representation(raw_key)));
 			},
 			(string fin) {
 				if (fin == "FIN") {
