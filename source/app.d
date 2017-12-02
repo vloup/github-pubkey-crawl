@@ -85,7 +85,7 @@ int main(string[] args)
 	send(print, "FIN");
 	const ulong max_id_print = receiveOnly!ulong();
 
-	const ulong last_id = max(max_id_print, max_id_pubkey.maxElement);
+	const ulong last_id = max(max_id_print, max_id_pubkey.maxElement, id);
 	writefln("Stopped at user id %s", last_id);
 	writeLastId(idcache, last_id);
 
