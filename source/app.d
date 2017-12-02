@@ -83,9 +83,9 @@ int main(string[] args)
 
 	stdout.flush();
 	send(print, "FIN");
-	ulong max_id_print = receiveOnly!ulong();
+	const ulong max_id_print = receiveOnly!ulong();
 
-	ulong last_id = max(max_id_print, max_id_pubkey.maxElement);
+	const ulong last_id = max(max_id_print, max_id_pubkey.maxElement);
 	writefln("Stopped at user id %s", last_id);
 	writeLastId(idcache, last_id);
 
@@ -492,7 +492,7 @@ void printworker(Tid parentTid, string filename)
 				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
 			},
 			(ulong id, ref string login, ref string public_key, ref string raw_key) {
-				import std.base64;
+				import std.base64 : Base64;
 				max_id = max(id, max_id);
 				output.writefln("%d,\"%s\",\"%s\",\"%s\"", id, login, public_key, Base64.encode(representation(raw_key)));
 			},
