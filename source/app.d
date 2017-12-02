@@ -1,4 +1,4 @@
-import std.algorithm : joiner;
+import std.algorithm : joiner, max, maxElement;
 import std.concurrency;
 import std.conv;
 import std.file: exists, getSize, remove;
@@ -22,16 +22,17 @@ int main(string[] args)
 
 	string filename = "github-pubkey.csv";
 	enum credcache = "login-info";
+	enum idcache = "id-info";
 	size_t pubkeyWorkerNum = 10;
 	ulong id = 0;
 	bool askPassword = false;
-	bool crawlGPGKeys = false;
+	bool crawlPGPKeys = false;
 
 	try {
 		const auto help = getopt(args, "output|o", &filename,
 				"id|i", &id,
 				"ask-password", &askPassword,
-				"gpg", &crawlGPGKeys,
+				"gpg", &crawlPGPKeys,
 				"worker|w", &pubkeyWorkerNum);
 
 		if (help.helpWanted) {
@@ -47,7 +48,11 @@ int main(string[] args)
 	if (id == 0) {
 		writeln("Finding last user id crawled.");
 		try {
-			id = getLastId(filename);
+			if (exists(idcache)) {
+				id = quickGetLastId(idcache);
+			} else {
+				id = getLastId(filename, crawlPGPKeys);
+			}
 		} catch (Exception e) {
 			stderr.writeln(e.msg);
 			return 2;
@@ -61,7 +66,7 @@ int main(string[] args)
 	Tid print = spawn(&printworker, thisTid, filename);
 	Tid[] pubkey = new Tid[pubkeyWorkerNum];
 	for (size_t i = 0; i < pubkeyWorkerNum; i++) {
-		pubkey[i] = spawn(&pubkeyworker, thisTid, print, credentials, crawlGPGKeys);
+		pubkey[i] = spawn(&pubkeyworker, thisTid, print, credentials, crawlPGPKeys);
 	}
 
 	writeln("Starting main user worker.");
@@ -70,17 +75,25 @@ int main(string[] args)
 
 	/* ensure correct termination of children threads */
 	writeln("Waiting for other threads to finish.");
+	ulong[] max_id_pubkey = new ulong[pubkey.length];
 	for (size_t i = 0; i < pubkey.length; i++) {
 		send(pubkey[i], "FIN");
-		receiveOnly!string();
+		max_id_pubkey[i] = receiveOnly!ulong();
 	}
 
 	stdout.flush();
 	send(print, "FIN");
-	receiveOnly!string();
+	ulong max_id_print = receiveOnly!ulong();
+
+	ulong last_id = max(max_id_print, max_id_pubkey.maxElement);
+	writefln("Stopped at user id %s", last_id);
+	writeLastId(idcache, last_id);
 
 	if ((retcode == 0 || retcode == -1) && exists(credcache)) {
 		remove(credcache);
+	}
+	if ((retcode == 0 || retcode == -1) && exists(idcache)) {
+		remove(idcache);
 	}
 
 	return retcode;
@@ -108,10 +121,11 @@ void printHelp()
  * Get the last user id from the output file.
  * Params:
  *   filename = file we will look the last id into.
+ *   crawlPGPKeys = if we should expect a csv containing PGP keys
  * Returns:
  *   the last user id of the file
  */
-ulong getLastId(string filename)
+ulong getLastId(ref string filename, bool crawlPGPKeys)
 {
 	import core.stdc.config : c_long;
 	import core.stdc.stdio : fclose, fgets, fopen, fseek, ftell;
@@ -210,12 +224,44 @@ ulong getLastId(string filename)
 
 	/* read the csv */
 	ulong id = 0;
-	foreach (record; line
-			.csvReader!(Tuple!(ulong, string, string))(',')) {
-		id = record[0];
+	if (crawlPGPKeys) {
+		foreach (record; line
+				.csvReader!(Tuple!(ulong, string, string, string))(',')) {
+			id = record[0];
+		}
+	} else {
+		foreach (record; line
+				.csvReader!(Tuple!(ulong, string, string))(',')) {
+			id = record[0];
+		}
 	}
 
 	return id;
+}
+
+/**
+ * Write the last id to a file
+ * Params:
+ *   filename = filename of the file
+ *   id = id to write in file
+ */
+void writeLastId(string filename, ulong id)
+{
+	File f = File(filename, "w");
+	f.writeln(id);
+}
+
+/**
+  * Get the last user id from the id cache
+  * Params:
+  *   filename = file name of the id cache
+  * Returns:
+  *   Last user id
+  */
+ulong quickGetLastId(string filename)
+{
+	File f = File(filename, "r");
+	return to!ulong(f.readln());
 }
 
 /**
@@ -272,7 +318,7 @@ Tuple!(string, string) getAuthentication(bool askPassword, string credcache)
  *  -2 means that we exhausted the call API.
  *  -3 means that we got another type of error.
  */
-int userworker(Tid[] pubkey, Tuple!(string, string) credentials, ulong startid)
+int userworker(ref Tid[] pubkey, ref Tuple!(string, string) credentials, ulong startid)
 {
 	enum API_ADDRESS = "https://api.github.com/users?since=";
 	bool loop = true;
@@ -329,27 +375,33 @@ int userworker(Tid[] pubkey, Tuple!(string, string) credentials, ulong startid)
  *   parentTid = parent thread id
  *   printworker = print worker thread id
  */
-void pubkeyworker(Tid parentTid, Tid printworker, Tuple!(string, string) credentials, bool crawlGPGKeys)
+void pubkeyworker(ref Tid parentTid, ref Tid printworker, ref Tuple!(string, string) credentials, bool crawlPGPKeys)
 {
 	bool loop = true;
 
 	HTTP conn = HTTP();
 	HTTP connAuth = HTTP();
-	conn.setAuthentication(credentials[0], credentials[1]);
+	connAuth.setAuthentication(credentials[0], credentials[1]);
+
+	ulong max_id = 0;
 
 	while (loop) {
 		receive(
 			(ulong id, ref string login) {
-				if (crawlGPGKeys) {
-					getPGPPubKeys(printworker, connAuth, id, login);
+				ushort statuscode = 0;
+				if (crawlPGPKeys) {
+					statuscode = getPGPPubKeys(printworker, connAuth, id, login);
 				} else {
-					getSSHPubKeys(printworker, conn, id, login);
+					statuscode = getSSHPubKeys(printworker, conn, id, login);
+				}
+				if (statuscode == 200 || statuscode == 404) {
+					max_id = max(id, max_id);
 				}
 			},
 			(string fin) {
 				if (fin == "FIN") {
 					loop = false;
-					send(parentTid, "FIN-ACK");
+					send(parentTid, max_id);
 				}
 			}
 		);
@@ -364,8 +416,10 @@ void pubkeyworker(Tid parentTid, Tid printworker, Tuple!(string, string) credent
   *   connAuth = HTTP socket to gather PGP keys
   *   id = the user id we are crawling
   *   login = the user name we are crawling
+  * Returns:
+  *   HTTP status code
   */
-void getPGPPubKeys(Tid printworker, HTTP connAuth, ulong id, ref string login)
+ushort getPGPPubKeys(ref Tid printworker, ref HTTP connAuth, ulong id, ref string login)
 {
 	enum GITHUB_GPG_ADDRESS = "https://api.github.com/users/";
 	try {
@@ -377,8 +431,10 @@ void getPGPPubKeys(Tid printworker, HTTP connAuth, ulong id, ref string login)
 			}
 		}
 	} catch (CurlException ce) {
-		/* IGNORED - let the main user crawler see the problem by itself */
+		writeln("User ", login, ": Got a ", connAuth.statusLine().code, " HTTP return code.");
 	}
+
+	return connAuth.statusLine().code;
 }
 
 /**
@@ -388,8 +444,10 @@ void getPGPPubKeys(Tid printworker, HTTP connAuth, ulong id, ref string login)
  *   conn = HTTP socket to gather the public keys from
  *   id = the user id we are crawling
  *   login = the user name we are crawling
+ * Returns:
+ *   HTTP status code
  */
-void getSSHPubKeys(Tid printworker, HTTP conn, ulong id, ref string login)
+ushort getSSHPubKeys(ref Tid printworker, ref HTTP conn, ulong id, ref string login)
 {
 	enum GITHUB_ADDRESS = "https://github.com/";
 
@@ -403,13 +461,15 @@ void getSSHPubKeys(Tid printworker, HTTP conn, ulong id, ref string login)
 			 */
 			if (line.length == 0) {
 				writeln("User ", login, ": Redirected page.");
-				return;
+				return conn.statusLine().code;
 			}
 			send(printworker, id, login, to!string(line));
 		}
 	} catch (CurlException ce) {
 		writeln("User ", login, ": Got a ", conn.statusLine().code, " HTTP return code.");
 	}
+
+	return conn.statusLine().code;
 }
 
 /**
@@ -423,19 +483,23 @@ void printworker(Tid parentTid, string filename)
 	File output = File(filename, "a");
 	bool loop = true;
 
+	ulong max_id = 0;
+
 	while (loop) {
 		receive(
 			(ulong id, ref string login, ref string key) {
+				max_id = max(id, max_id);
 				output.writefln("%d,\"%s\",\"%s\"", id, login, key);
 			},
 			(ulong id, ref string login, ref string public_key, ref string raw_key) {
 				import std.base64;
+				max_id = max(id, max_id);
 				output.writefln("%d,\"%s\",\"%s\",\"%s\"", id, login, public_key, Base64.encode(representation(raw_key)));
 			},
 			(string fin) {
 				if (fin == "FIN") {
 					loop = false;
-					send(parentTid, "FIN-ACK");
+					send(parentTid, max_id);
 				}
 			}
 		);
