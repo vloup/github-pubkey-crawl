@@ -7,6 +7,7 @@ import std.net.curl;
 import std.parallelism : parallel;
 import std.stdio;
 import std.string;
+import std.typecons : Tuple, tuple;
 
 /**
  * Main entry point.
@@ -54,17 +55,17 @@ int main(string[] args)
 	}
 	writeln("Starting with user id ", id, ".");
 
-	HTTP conn = getAuthentication(askPassword, credcache);
+	Tuple!(string, string) credentials = getAuthentication(askPassword, credcache);
 
 	writeln("Spawning pubkey workers.");
 	Tid print = spawn(&printworker, thisTid, filename);
 	Tid[] pubkey = new Tid[pubkeyWorkerNum];
 	for (size_t i = 0; i < pubkeyWorkerNum; i++) {
-		pubkey[i] = spawn(&pubkeyworker, thisTid, print, crawlGPGKeys);
+		pubkey[i] = spawn(&pubkeyworker, thisTid, print, credentials, crawlGPGKeys);
 	}
 
 	writeln("Starting main user worker.");
-	const int retcode = userworker(pubkey, conn, id);
+	const int retcode = userworker(pubkey, credentials, id);
 	stdout.flush();
 
 	/* ensure correct termination of children threads */
@@ -116,7 +117,6 @@ ulong getLastId(string filename)
 	import core.stdc.stdio : fclose, fgets, fopen, fseek, ftell;
 	import core.stdc.stdlib : calloc, free;
 	import std.csv : csvReader;
-	import std.typecons : Tuple;
 
 	enum ERR_OPEN = "[ERROR] Failed to open file.";
 	enum ERR_SEEK = "[ERROR] Failed to seek in file.";
@@ -224,12 +224,11 @@ ulong getLastId(string filename)
  *   askPassword = if we should ask the password or try to use the cached one.
  *   credcache = file that caches the credentials for reuse
  * Returns:
- *   an openend HTTP socket where we logged in.
+ *   A Tuple containing the user name and password provided by the user.
  */
-HTTP getAuthentication(bool askPassword, string credcache)
+Tuple!(string, string) getAuthentication(bool askPassword, string credcache)
 {
 	import std.process : executeShell;
-
 
 	string username, passwd;
 
@@ -256,17 +255,15 @@ HTTP getAuthentication(bool askPassword, string credcache)
 		}
 	}
 
-	auto conn = HTTP();
-	conn.setAuthentication(username, passwd);
 
-	return conn;
+	return tuple(username, passwd);
 }
 
 /**
  * Worker that will crawl the user logins and transmit this to the public key workers.
  * Params:
  *   pubkey = array of public key workers
- *   conn = the HTTP socket which we will use to gather user names.
+ *   credentials = login informations which we will use to gather user names.
  *   startid = the first id we will crawl
  * Returns:
  *  the status code of this thread.
@@ -275,13 +272,16 @@ HTTP getAuthentication(bool askPassword, string credcache)
  *  -2 means that we exhausted the call API.
  *  -3 means that we got another type of error.
  */
-int userworker(Tid[] pubkey, HTTP conn, ulong startid)
+int userworker(Tid[] pubkey, Tuple!(string, string) credentials, ulong startid)
 {
 	enum API_ADDRESS = "https://api.github.com/users?since=";
 	bool loop = true;
 	ulong id = startid;
 	int retcode = 0;
 	size_t workerid = 0;
+
+	auto conn = HTTP();
+	conn.setAuthentication(credentials[0], credentials[1]);
 
 	while (loop) {
 		try {
@@ -329,15 +329,22 @@ int userworker(Tid[] pubkey, HTTP conn, ulong startid)
  *   parentTid = parent thread id
  *   printworker = print worker thread id
  */
-void pubkeyworker(Tid parentTid, Tid printworker, bool crawlGPGKeys)
+void pubkeyworker(Tid parentTid, Tid printworker, Tuple!(string, string) credentials, bool crawlGPGKeys)
 {
 	bool loop = true;
+
 	HTTP conn = HTTP();
+	HTTP connAuth = HTTP();
+	conn.setAuthentication(credentials[0], credentials[1]);
 
 	while (loop) {
 		receive(
 			(ulong id, ref string login) {
-				getpubkeys(printworker, conn, id, login, crawlGPGKeys);
+				if (crawlGPGKeys) {
+					getPGPPubKeys(printworker, connAuth, id, login);
+				} else {
+					getSSHPubKeys(printworker, conn, id, login);
+				}
 			},
 			(string fin) {
 				if (fin == "FIN") {
@@ -351,41 +358,54 @@ void pubkeyworker(Tid parentTid, Tid printworker, bool crawlGPGKeys)
 }
 
 /**
- * Gather the public keys of one user.
+  * Gather PGP public keys of one user.
+  * Params:
+  *   printworker = print worker thread id
+  *   connAuth = HTTP socket to gather PGP keys
+  *   id = the user id we are crawling
+  *   login = the user name we are crawling
+  */
+void getPGPPubKeys(Tid printworker, HTTP connAuth, ulong id, ref string login)
+{
+	enum GITHUB_GPG_ADDRESS = "https://api.github.com/users/";
+	try {
+		auto raw = get(GITHUB_GPG_ADDRESS ~ login ~ "/gpg_keys", connAuth);
+		JSONValue[] array = parseJSON(raw).array();
+		if (array.length != 0) {
+			foreach (ref a; parallel(array)) {
+				send(printworker, id, login, a["public_key"].str, a["raw_key"].str);
+			}
+		}
+	} catch (CurlException ce) {
+		/* IGNORED - let the main user crawler see the problem by itself */
+	}
+}
+
+/**
+ * Gather the SSH public keys of one user.
  * Params:
  *   printworker = print worker thread id
- *   conn = HTTP socket to gather the public keys from.
+ *   conn = HTTP socket to gather the public keys from
  *   id = the user id we are crawling
  *   login = the user name we are crawling
  */
-void getpubkeys(Tid printworker, HTTP conn, ulong id, ref string login, bool crawlGPGKeys)
+void getSSHPubKeys(Tid printworker, HTTP conn, ulong id, ref string login)
 {
 	enum GITHUB_ADDRESS = "https://github.com/";
-	enum GITHUB_GPG_ADDRESS = "https://api.github.com/users/";
 
 	try {
-		if (crawlGPGKeys) {
-			auto raw = get(GITHUB_GPG_ADDRESS ~ login ~ "/gpg_keys", conn);
-			JSONValue[] array = parseJSON(raw).array();
-			if (array.length != 0) {
-				foreach (ref a; parallel(array)) {
-					send(printworker, id, login, a["public_key"].str, a["raw_key"].str);
-				}
+		foreach (line; byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn)) {
+			/*
+			 * Weird users such as 'session' or 'readme' return bad data.
+			 * Luckily, the first line of that kind of input is empty,
+			 * so we do detect them like that and ignore them.
+			 * For this same reason, one should not use parallel since it may hang the whole.
+			 */
+			if (line.length == 0) {
+				writeln("User ", login, ": Redirected page.");
+				return;
 			}
-		} else {
-			foreach (line; byLine(GITHUB_ADDRESS ~ login ~ ".keys", KeepTerminator.no, '\n', conn)) {
-				/*
-				 * Weird users such as 'session' or 'readme' return bad data.
-				 * Luckily, the first line of that kind of input is empty,
-				 * so we do detect them like that and ignore them.
-				 * For this same reason, one should not use parallel since it may hang the whole.
-				 */
-				if (line.length == 0) {
-					writeln("User ", login, ": Redirected page.");
-					return;
-				}
-				send(printworker, id, login, to!string(line));
-			}
+			send(printworker, id, login, to!string(line));
 		}
 	} catch (CurlException ce) {
 		writeln("User ", login, ": Got a ", conn.statusLine().code, " HTTP return code.");
