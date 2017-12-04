@@ -80,7 +80,7 @@ int main(string[] args)
 	writeln("Waiting for other threads to finish.");
 	ulong[] max_id_pubkey = new ulong[pubkey.length];
 	for (size_t i = 0; i < pubkey.length; i++) {
-		send(pubkey[i], "FIN");
+		prioritySend(pubkey[i], "FIN");
 		max_id_pubkey[i] = receiveOnly!ulong();
 	}
 
