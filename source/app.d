@@ -49,7 +49,7 @@ int main(string[] args)
 		writeln("Finding last user id crawled.");
 		try {
 			if (exists(idcache)) {
-				id = quickGetLastId(idcache);
+				id = max(quickGetLastId(idcache), getLastId(filename, crawlPGPKeys));
 			} else {
 				id = getLastId(filename, crawlPGPKeys);
 			}
@@ -61,12 +61,15 @@ int main(string[] args)
 	writeln("Starting with user id ", id, ".");
 
 	Tuple!(string, string) credentials = getAuthentication(askPassword, credcache);
+	thisTid.setMaxMailboxSize(0, OnCrowding.block);
 
 	writeln("Spawning pubkey workers.");
 	Tid print = spawn(&printworker, thisTid, filename);
+	print.setMaxMailboxSize(0, OnCrowding.block);
 	Tid[] pubkey = new Tid[pubkeyWorkerNum];
 	for (size_t i = 0; i < pubkeyWorkerNum; i++) {
 		pubkey[i] = spawn(&pubkeyworker, thisTid, print, credentials, crawlPGPKeys);
+		pubkey[i].setMaxMailboxSize(0, OnCrowding.block);
 	}
 
 	writeln("Starting main user worker.");
@@ -261,7 +264,7 @@ void writeLastId(string filename, ulong id)
 ulong quickGetLastId(string filename)
 {
 	File f = File(filename, "r");
-	return to!ulong(f.readln());
+	return to!ulong(f.readln().chomp);
 }
 
 /**
